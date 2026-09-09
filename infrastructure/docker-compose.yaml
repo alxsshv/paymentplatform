@@ -1,0 +1,84 @@
+services:
+
+  services-database:
+    image: "postgres:16"
+    container_name: "services-database"
+    environment:
+      POSTGRES_USER: ${SERVICES_DB_USER}
+      POSTGRES_PASSWORD: ${SERVICES_DB_PASS}
+      POSTGRES_DB: ${SERVICES_DB}
+    ports:
+      - "5438:5432"
+    volumes:
+      - ./infrastructure/service-db/init/init-schemas.sql:/docker-entrypoint-initdb.d/init-schemas.sql
+      - pgdata:/var/lib/postgresql/data
+    restart: always
+    healthcheck:
+      test: [ "CMD-SHELL", "pg_isready -U ${SERVICES_DB_USER} -p 5432" ]
+      interval: 10s
+      timeout: 5s
+      retries: 20
+      start_period: 10s
+    networks:
+      - app_network
+
+  # CACHE
+  redis:
+    image: "redis:7"
+    container_name: "redis"
+    command: [ "redis-server", "--requirepass", "${REDIS_PASSWORD}" ]
+    environment:
+      - REDIS_PASSWORD=${REDIS_PASSWORD}
+    ports:
+      - "6379:6379"
+    networks:
+      - app_network
+    healthcheck:
+      test: [ "CMD", "sh", "-c", "redis-cli -a \"$REDIS_PASSWORD\" ping" ]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+
+  kafka:
+    # Используем официальный образ Apache Kafka
+    image: apache/kafka:3.7.1
+    container_name: kafka
+    ports:
+      - "9092:9092"
+    networks:
+      - app_network
+    environment:
+      KAFKA_NODE_ID: 1
+      KAFKA_PROCESS_ROLES: broker,controller
+      # 1. INTERNAL listener (для docker-сети, используется kafka-ui)
+      # 2. PLAINTEXT listener (для хоста, используется Spring Boot)
+      KAFKA_LISTENERS: PLAINTEXT://0.0.0.0:9092,CONTROLLER://0.0.0.0:9093,INTERNAL://0.0.0.0:29092
+      KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://localhost:9092,INTERNAL://kafka:29092
+      KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+      KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT,INTERNAL:PLAINTEXT
+      KAFKA_CONTROLLER_QUORUM_VOTERS: 1@kafka:9093
+      KAFKA_INTER_BROKER_LISTENER_NAME: INTERNAL
+
+      KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+      KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+
+  kafka-ui:
+    image: provectuslabs/kafka-ui:latest
+    container_name: kafka-ui
+    ports:
+      - "8088:8080"
+    environment:
+      KAFKA_CLUSTERS_0_NAME: local
+      KAFKA_CLUSTERS_0_BOOTSTRAPSERVERS: kafka:29092
+    networks:
+      - app_network
+    depends_on:
+      - kafka
+
+networks:
+    app_network:
+      driver: bridge
+
+volumes:
+  pgdata:
